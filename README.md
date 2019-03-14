@@ -18,6 +18,14 @@ Created for the goals of [ruby2nim](https://github.com/metacraft-labs/ruby2nim).
 
 TBD
 
+## Contributing
+
+```bash
+  bundle config local.deduckt .
+  bundle exec deduckt/ruby-deduckt
+```
+
+bnd
 ## FAQ
 
 * Why does it analyze all the events?
