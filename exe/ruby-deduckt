@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+require "deduckt"
+
+module_patterns = []
+outdir = ""
+program = ""
+
+# TODO: Switch to a fancier CLI-processing lib
+
+def usage(s)
+  $stderr.puts(s)
+  $stderr.puts("Usage: #{File.basename($0)}: [-m module] [-o outdir] program [args]")
+  exit(2)
+end
+
+loop do
+  case ARGV[0]
+  when '-m', '--module'
+    ARGV.shift
+    usage("Module name expected after -m or --module") if ARGV.empty?
+    module_patterns << ARGV.shift
+  when '-o', '--outdir'
+    usage("Module name expected after -m or --module") if ARGV.empty?
+    outdir = ARGV.shift
+  when /^-/
+    usage("Unknown option: #{ARGV[0].inspect}")
+  else
+    program = ARGV.shift
+    break
+  end
+end
+
+if outdir.empty?
+  outdir = ENV["DEDUCKT_OUTPUT_DIR"]
+end
+
+if outdir == nil or outdir.empty?
+  usage("Please specify outdir")
+end
+
+options = {
+  :module_pattens => module_patterns,
+  :outdir => outdir
+}
+
+Deduckt::TraceRun.new(program, ARGV, options).execute
+
