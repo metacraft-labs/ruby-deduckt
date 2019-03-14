@@ -21,6 +21,7 @@ loop do
     usage("Module name expected after -m or --module") if ARGV.empty?
     module_patterns << ARGV.shift
   when '-o', '--outdir'
+    ARGV.shift
     usage("Module name expected after -m or --module") if ARGV.empty?
     outdir = ARGV.shift
   when /^-/
@@ -33,6 +34,10 @@ end
 
 if outdir.empty?
   outdir = ENV["DEDUCKT_OUTPUT_DIR"]
+end
+
+if module_patterns.empty?
+  module_patterns = ENV["DEDUCKT_MODULE_PATTERNS"].split ' '
 end
 
 if outdir == nil or outdir.empty?

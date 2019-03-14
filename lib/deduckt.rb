@@ -578,7 +578,7 @@ module Deduckt
 
     def module_of_interest?(path)
       for pattern in @module_patterns
-        return false if not tp.path.include?(pattern)
+        return false if not path.include?(pattern)
       end
       true
     end
