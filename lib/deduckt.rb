@@ -504,7 +504,7 @@ module Deduckt
           new_args = []
 
           m[:children][arg_index .. -1].each do |arg|
-            if arg[:kind] == :Table
+            if arg[:kind] == :NimTable
               new_args += arg[:children]
             else
               new_args.push(arg)
