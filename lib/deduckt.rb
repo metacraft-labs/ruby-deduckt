@@ -23,7 +23,7 @@ module Deduckt
     def initialize(program, args, options)
       @program = program
       @args = args
-      @module_patterns = options[:module_pattens]
+      @module_patterns = options[:module_patterns]
       @outdir = options[:outdir]
       @trace = []
       @lines = []
@@ -583,7 +583,7 @@ module Deduckt
       true
     end
 
-    def execute
+    def execute(load=true)
       trace_run = self
 
       $t = TracePoint.new(:call, :c_call, :b_call) do |tp|
@@ -637,12 +637,25 @@ module Deduckt
       $t.enable
       $t2.enable
 
-      Kernel.load @program
+      p "LOAD"
+      p load
+      if load
+        Kernel.load @program
+      end
 
-      $t.disable
-      $t2.disable
+      at_exit do
+        $t.disable
+        $t2.disable
 
-      generate
+        generate
+      end
     end
   end
+end
+
+def deduckt
+  outdir = ENV["DEDUCKT_OUTPUT_DIR"]
+  module_patterns = ENV["DEDUCKT_MODULE_PATTERNS"].split ' '
+
+  Deduckt::TraceRun.new("", [], {outdir: outdir, module_patterns: module_patterns}).execute(load=false)
 end

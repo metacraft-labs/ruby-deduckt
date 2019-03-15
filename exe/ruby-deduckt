@@ -45,7 +45,7 @@ if outdir == nil or outdir.empty?
 end
 
 options = {
-  :module_pattens => module_patterns,
+  :module_patterns => module_patterns,
   :outdir => outdir
 }
 
