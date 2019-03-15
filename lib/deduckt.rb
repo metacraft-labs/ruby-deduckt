@@ -16,7 +16,7 @@ module Deduckt
 
   KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return}
 
-  OPERATORS = Set.new [:+, :-, :*, :/, :==]
+  OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
   NORMAL = Set.new [:RubyIf, :RubyPair]
 
   class TraceRun
@@ -497,6 +497,8 @@ module Deduckt
             op[:kind] = :Operator
             op[:label] = op[:text]
             m = {kind: :BinOp, children: [op, m[:children][0], m[:children][2]], typ: m[:typ]}
+          elsif m[:kind] == :Send && m[:children][1][:text].to_sym == :[]
+            m = {kind: :Index, children: [m[:children][0], m[:children][2]], typ: m[:typ]}
           end
           m
         end
