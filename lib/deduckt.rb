@@ -14,7 +14,7 @@ module Deduckt
 
   PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
 
-  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return}
+  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
   NORMAL = Set.new [:RubyIf, :RubyPair]
@@ -263,10 +263,18 @@ module Deduckt
             line = -1
             column = -1
           end
+          if node.type == :yield
+            @is_iterator = true
+          end
           if node.type == :def
-            value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[0]}, args: [], code: [], typ: nil, return_type: nil}
+
+            @is_iterator = false
+            value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[0]}, args: [], code: [], isIterator: false, typ: nil, return_type: nil}
             value[:args] = [{kind: :Variable, label: :self, typ: nil}] + node.children[1].children.map { |it| process_node it }
             value[:code] = node.children[2 .. -1].map { |it| process_node it }
+            if @is_iterator
+              value[:isIterator] = true
+            end
             @inter_ast[:method_lines][line] = value
             return value.tap { |t| t[:line] = line; t[:column] = column }
           elsif node.type == :block
@@ -347,6 +355,10 @@ module Deduckt
 
       def process_lvasgn(node)
         {kind: :Assign, children: [{kind: :Variable, label: node.children[0]}, process_node(node.children[1])]}
+      end
+
+      def process_block_pass(node)
+        {kind: :Block, args: [{kind: :Variable, label: :it}], code: [{kind: :Attribute, children: [{kind: :Variable, label: :it}, {kind: :String, text: node.children[0].children[0][1 .. -1]}]}]}
       end
 
       def process_casgn(node)
