@@ -14,7 +14,7 @@ module Deduckt
 
   PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
 
-  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break}
+  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
   NORMAL = Set.new [:RubyIf, :RubyPair]
@@ -40,7 +40,7 @@ module Deduckt
         if @inter_traces[data.path][:method_lines][data.lineno][:kind] == :NodeMethod && data.event != :b_call ||
            @inter_traces[data.path][:method_lines][data.lineno][:kind] == :Block && data.event == :b_call
           @inter_traces[data.path][:method_lines][data.lineno][:args].each do |arg|
-            puts "ARG #{arg}"
+            # puts "ARG #{arg}"
             if arg[:label] == :self
               arg[:typ] = load_type(data.binding.receiver)
             else
@@ -571,8 +571,9 @@ module Deduckt
             b = children.select { |n| n[:kind] != :NodeMethod }
             file[:main] += b.map { |it| compile_child(it) }
           end
-          p klass[:children][0][:label]
-          @inter_types[klass[:children][0][:label]][:base] = parent
+          if @inter_types.key?(klass[:children][0][:label])
+            @inter_types[klass[:children][0][:label]][:base] = parent
+          end
           $types_no_definition.delete klass[:children][0][:label]
 
           {kind: :Class,
@@ -587,12 +588,18 @@ module Deduckt
 
     def generate
       compile @inter_traces
+      p @outdir
+      p @inter_traces.length
       File.write(File.join(@outdir, "lang_traces.json"), JSON.pretty_generate(@inter_traces))
     end
 
     def module_of_interest?(path)
       for pattern in @module_patterns
-        return false if not path.include?(pattern)
+        if pattern == 'rubocop'
+          return false if not path.include?(pattern)
+        else
+          return false if not path.include?('/' + pattern)
+        end
       end
       true
     end
@@ -605,7 +612,7 @@ module Deduckt
 
         # TODO require require_relative
         if ![:new, :initialize, :enable, :disable, :require_relative, :require].include?(tp.method_id) #tp.path != "deduckt.rb" &&
-          p tp
+          # p tp
           if !@inter_traces.key?(tp.path)
             @inter_traces[tp.path] = generate_ast(tp.path)
           end
