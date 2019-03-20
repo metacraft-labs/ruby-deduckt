@@ -14,10 +14,10 @@ module Deduckt
 
   PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
 
-  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While}
+  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
-  NORMAL = Set.new [:RubyIf, :RubyPair]
+  NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase]
 
   class TraceRun
     def initialize(program, args, options)
@@ -253,6 +253,7 @@ module Deduckt
 
       def process_node(node)
         if node.class == Parser::AST::Node
+          p node
           if respond_to?(:"process_#{node.type}")
             return send :"process_#{node.type}", node
           end
@@ -266,12 +267,15 @@ module Deduckt
           if node.type == :yield
             @is_iterator = true
           end
-          if node.type == :def
-
+          if node.type == :def || node.type == :defs
+            index = {def: 0, defs: 1}[node.type]
             @is_iterator = false
-            value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[0]}, args: [], code: [], isIterator: false, typ: nil, return_type: nil}
-            value[:args] = [{kind: :Variable, label: :self, typ: nil}] + node.children[1].children.map { |it| process_node it }
-            value[:code] = node.children[2 .. -1].map { |it| process_node it }
+            value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[index]}, args: [], code: [], isIterator: false, typ: nil, return_type: nil}
+            value[:args] = [{kind: :Variable, label: :self, typ: nil}] + node.children[index + 1].children.map { |it| process_node it }
+            value[:code] = node.children[index + 2 .. -1].map { |it| process_node it }
+            if node.type == :defs
+              value[:isClass] = true
+            end
             if @is_iterator
               value[:isIterator] = true
             end
@@ -333,6 +337,14 @@ module Deduckt
         {kind: :Symbol, text: node.children[0]}
       end
 
+      def process_true(node)
+        {kind: :Bool, val: true}
+      end
+
+      def process_false(node)
+        {kind: :Bool, val: false}
+      end
+
       def process_and(node)
         {kind: :BinOp, children: [{kind: :Operator, label: "and"}, process_node(node.children[0]), process_node(node.children[1])]}
       end
@@ -386,7 +398,7 @@ module Deduckt
       def process_masgn(node)
         if node.children[0].children.length == 1
           right = {kind: :Index, children: [process_node(node.children[1].children[0].children[0]), {kind: :Int, i: 0}]}
-          {kind: :Assign, children: [{kind: :Variable, label: process_node(node.children[0].children[0].children[1])}, right]}
+          {kind: :Assign, children: [{kind: :Variable, label: node.children[0].children[0].children[-1]}, right]}
         else
           {kind: :Nil}
         end
