@@ -14,7 +14,7 @@ module Deduckt
 
   PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
 
-  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of}
+  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
   NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase]
@@ -87,6 +87,8 @@ module Deduckt
       end
       res = if klass == Integer
         {kind: :Simple, label: "Int"}
+      elsif klass == Float
+        {kind: :Simple, label: "Float"}
       elsif klass == NilClass
         {kind: :Simple, label: "Void"}
       elsif klass == String
@@ -230,6 +232,14 @@ module Deduckt
           if it.type == :class
             @current_class = it.children[0].children[1].to_s
             res[:classes].push(process_node it)
+            puts "CLASS"
+            p res[:classes][-1]
+            new_class = res[:classes][-1][:children].select { |it| it[:kind] != :RubyClass }
+            classes = res[:classes][-1][:children].select { |it| it[:kind] == :RubyClass }
+            if classes.length > 0
+              res[:classes][-1][:children] = new_class
+              res[:classes] += classes
+            end
             @current_class = ''
           elsif it.type == :send && it.children[0].nil? && it.children[1] == :require
             res[:imports].push(it.children[2].children[0])
@@ -308,6 +318,8 @@ module Deduckt
           end.tap { |t| if !node.nil?; t[:line] = line; t[:column] = column; end }
         elsif node.class == Integer
           {kind: :Int, i: node, typ: nil}
+        elsif node.class == Float
+          {kind: :Float, f: node, typ: nil}
         elsif node.class == String
           {kind: :String, text: node, typ: nil}
         elsif node.class == Symbol
@@ -321,6 +333,28 @@ module Deduckt
         {kind: :RubyConst, label: node.children[1]}
       end
 
+      def process_op_asgn(node)
+        left = process_node(node.children[0].children[0])
+        op = {kind: :Operator, label: node.children[1]}
+        right = process_node(node.children[2])
+        if left[:kind] == :Symbol
+          left[:kind] = :Variable
+          left[:label] = left[:text]
+        end
+        {kind: :AugOp, children: [left, op, right]}
+      end
+
+      def process_or_asgn(node)
+        left = process_node(node.children[0].children[0])
+        op = {kind: :Operator, label: "or"}
+        right = process_node(node.children[1])
+        if left[:kind] == :Symbol
+          left[:kind] = :Variable
+          left[:label] = left[:text]
+        end
+        {kind: :Assign, children: [left, {kind: :BinOp, children: [left, op, right]}]}
+      end
+
       def process_int(node)
         {kind: :Int, i: node.children[0]}
       end
@@ -331,6 +365,10 @@ module Deduckt
 
       def process_dstr(node)
         {kind: :Docstring, text: node.children.map { |it| it.children[0] }.join }
+      end
+
+      def process_float(node)
+        {kind: :Float, f: node.children[0]}
       end
 
       def process_sym(node)
@@ -397,7 +435,7 @@ module Deduckt
 
       def process_masgn(node)
         if node.children[0].children.length == 1
-          right = {kind: :Index, children: [process_node(node.children[1].children[0].children[0]), {kind: :Int, i: 0}]}
+          right = {kind: :Index, children: [node.children[1].type == :send ? process_node(node.children[1]) : process_node(node.children[1].children[0].children[0]), {kind: :Int, i: 0}]}
           {kind: :Assign, children: [{kind: :Variable, label: node.children[0].children[0].children[-1]}, right]}
         else
           {kind: :Nil}
@@ -495,6 +533,9 @@ module Deduckt
     end
 
     def compile_child child
+      if child.nil?
+        return {kind: :Nil}
+      end
       if child[:kind] == :RubySend
         m = if child[:children][0][:kind] == :Nil
           arg_index = 1
