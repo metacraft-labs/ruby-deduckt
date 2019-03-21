@@ -1,6 +1,6 @@
 require "deduckt/version"
 require 'json'
-require 'parser/current'
+require 'parser/ruby25'
 require 'ast'
 require 'set'
 
@@ -14,10 +14,10 @@ module Deduckt
 
   PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
 
-  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range}
+  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
-  NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase]
+  NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase, :RubySelf]
 
   class TraceRun
     def initialize(program, args, options)
@@ -128,7 +128,7 @@ module Deduckt
           end
           @inter_types[label] = res
           if label.to_s.include?('::')
-            p label.to_s.split('::')[-1].to_sym
+            # p label.to_s.split('::')[-1].to_sym
             @inter_types[label.to_s.split('::')[-1].to_sym] = res
           end
           res = {kind: :Simple, label: label} # Praise the Lord!
@@ -155,7 +155,7 @@ module Deduckt
           [{kind: :MethodOverload, overloads: [left, right]}, false]
         end
       when :MethodOverload
-        p left
+        nil #p left
       when :Simple
         if left[:label] == right[:label]
           [left, true]
@@ -205,8 +205,11 @@ module Deduckt
     end
 
     class InterTranslator
-      def initialize(ast)
+      def initialize(ast, comments, input)
         @ast = ast
+        @comments = comments
+        @comments = Hash[@comments.map { |comment| [comment.loc.line, comment.text] }]
+        @raw = [''] + input.split("\n")
       end
 
       def process
@@ -232,14 +235,16 @@ module Deduckt
           if it.type == :class
             @current_class = it.children[0].children[1].to_s
             res[:classes].push(process_node it)
-            puts "CLASS"
-            p res[:classes][-1]
+            # puts "CLASS"
+            # p res[:classes][-1]
             new_class = res[:classes][-1][:children].select { |it| it[:kind] != :RubyClass }
             classes = res[:classes][-1][:children].select { |it| it[:kind] == :RubyClass }
             if classes.length > 0
               res[:classes][-1][:children] = new_class
               res[:classes] += classes
             end
+
+            find_docstring(res[:classes][-1])
             @current_class = ''
           elsif it.type == :send && it.children[0].nil? && it.children[1] == :require
             res[:imports].push(it.children[2].children[0])
@@ -253,6 +258,25 @@ module Deduckt
         res
       end
 
+      def find_docstring(object)
+        i = object[:line] - 1
+        while i > 2
+          if @raw[i].nil? || !@raw[i].lstrip.start_with?('#')
+            break
+          end
+          if @comments.key?(i)
+            if object[:docstring].nil?
+              object[:docstring] = []
+            end
+            object[:docstring].push(@comments[i].gsub(/\A#+/, ''))
+
+          end
+          i -= 1
+        end
+        object[:docstring].reverse! if !object[:docstring].nil? 
+
+      end
+
       def get_kind(type)
         if KINDS.key?(type)
           KINDS[type]
@@ -263,7 +287,7 @@ module Deduckt
 
       def process_node(node)
         if node.class == Parser::AST::Node
-          p node
+          # p node
           if respond_to?(:"process_#{node.type}")
             return send :"process_#{node.type}", node
           end
@@ -283,6 +307,9 @@ module Deduckt
             value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[index]}, args: [], code: [], isIterator: false, typ: nil, return_type: nil}
             value[:args] = [{kind: :Variable, label: :self, typ: nil}] + node.children[index + 1].children.map { |it| process_node it }
             value[:code] = node.children[index + 2 .. -1].map { |it| process_node it }
+            value[:line] = line
+            find_docstring(value)
+            value[:docstring] = value[:docstring] || []
             if node.type == :defs
               value[:isClass] = true
             end
@@ -399,6 +426,10 @@ module Deduckt
         {kind: :Variable, label: node.children[0]}
       end
 
+      def process_gvar(node)
+        {kind: :Variable, label: node.children[0]}
+      end
+
       def process_ivasgn(node)
         {kind: :Assign, children: [{kind: :Attribute, children: [{kind: :Self}, {kind: :String, text: node.children[0][1 .. -1]}]}, process_node(node.children[1])]}
       end
@@ -408,7 +439,8 @@ module Deduckt
       end
 
       def process_block_pass(node)
-        {kind: :Block, args: [{kind: :Variable, label: :it}], code: [{kind: :Attribute, children: [{kind: :Variable, label: :it}, {kind: :String, text: node.children[0].children[0][1 .. -1]}]}]}
+        arg = node.children[0].children[0].nil? ? "" : node.children[0].children[0][1 .. -1]
+        {kind: :Block, args: [{kind: :Variable, label: :it}], code: [{kind: :Attribute, children: [{kind: :Variable, label: :it}, {kind: :String, text: arg}]}]}
       end
 
       def process_casgn(node)
@@ -443,94 +475,13 @@ module Deduckt
       end
     end
 
-    class InterProcessor
-      include AST::Processor::Mixin
-
-      def initialize(traces, methods, inter_module)
-        @traces = traces
-        @methods = methods
-        @path = ''
-        @inter_module = inter_module
-      end
-
-      def on_class(node)
-        old_path = @path
-        @path += node.children[0].children[1].to_s
-        @inter_module[:classes].push({kind: INTER_CLASS, label: node.children[0].children[1].to_s, fields: {}, methods: {}})
-        old_class = @inter_class
-        @inter_class = @inter_module[:classes][-1]
-        node.updated(nil, process_all(node))
-        @inter_class = old_class
-        @path = old_path
-
-      end
-
-      def load_args(node, traces)
-        node.children.each_with_index.map { |it, i| {kind: INTER_VARIABLE, label: it.children[0].to_s, typ: traces[:args][i]}}
-      end
-
-      def on_def(node)
-        id = "#{@path}.#{node.children[0].to_s}"
-        if @methods.include?(id) && @traces.key?(id)
-          args = load_args(node.children[1], @traces[id])
-          new_node = {kind: INTER_METHOD, label: node.children[0].to_s, id: id, args: args, code: [], return_type: @traces[id][:return_type], raises: []}
-          if !@traces[id][-1].nil?
-            new_node[:raises].push({kind: INTER_VARIABLE, label: @traces[id][-1].class.to_s})
-          end
-          @inter_method = new_node
-          process(node.children[2])
-          @inter_method = nil
-          if @inter_class.nil?
-            @inter_module[:main].push(new_node)
-          else
-            @inter_class[:methods][node.children[0].to_s] = new_node
-          end
-        end
-      end
-
-      def on_send(node)
-        result = {}
-        if node.children[0].nil?
-          label = node.children[1].to_s
-          if PATTERN_STDLIB.key?(label.to_sym)
-            call_node = PATTERN_STDLIB[label.to_sym].call(node.children[2..-1].map { |it| process(it) })
-          else
-            call_node = {kind: INTER_CALL, args: [{kind: INTER_VARIABLE, label: label}] + node.children[2..-1].map { |it| process(it) }}
-          end
-          if @inter_method.nil?
-            return
-          end
-          @inter_method[:code].push(call_node)
-        end
-      end
-
-      def on_lvar(node)
-        {kind: INTER_VARIABLE, label: node.children[0].to_s}
-      end
-
-      def on_each(node)
-        node.updated(nil, process_all(node))
-      end
-
-      def on_begin(node)
-        node.updated(nil, process_all(node))
-      end
-    end
 
     def generate_ast(path)
       input = File.read(path)
-      ast = Parser::CurrentRuby.parse(input)
-      puts "AST #{path}"
-      # InterProcessor.new(traces, methods, inter_ast).process(ast)
-      InterTranslator.new(ast).process
+      ast, comments = Parser::Ruby25.parse_with_comments(input)
+      InterTranslator.new(ast, comments, input).process
     end
 
-
-    def generate_path(path, methods, traces, inter_traces)
-      input = File.read(path)
-      ast = Parser::CurrentRuby.parse(input)
-      inter_traces[path] = generate_inter_traces(traces, methods, ast)
-    end
 
     def compile_child child
       if child.nil?
@@ -633,6 +584,7 @@ module Deduckt
            label: klass[:children][0][:label],
            methods: mercy.map { |met| {label: met[:label][:label], node: compile_child(met)} },
            fields: [],
+           docstring: klass[:docstring] || [],
            typ: @inter_types[klass[:children][0][:label]]}
         end
       end
@@ -641,8 +593,8 @@ module Deduckt
 
     def generate
       compile @inter_traces
-      p @outdir
-      p @inter_traces.length
+      #p @outdir
+      #p @inter_traces.length
       File.write(File.join(@outdir, "lang_traces.json"), JSON.pretty_generate(@inter_traces))
     end
 
@@ -711,8 +663,6 @@ module Deduckt
       $t.enable
       $t2.enable
 
-      p "LOAD"
-      p load
       if load
         Kernel.load @program
       end
