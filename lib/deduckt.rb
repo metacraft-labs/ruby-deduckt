@@ -29,6 +29,7 @@ module Deduckt
       @lines = []
       @inter_traces = {}
       @inter_types = {}
+      @stack = []
       @call_lines = []
       @current_block = ""
       @processing = {}
@@ -39,10 +40,12 @@ module Deduckt
       if @inter_traces[data.path][:method_lines].key?(data.lineno)
         if @inter_traces[data.path][:method_lines][data.lineno][:kind] == :NodeMethod && data.event != :b_call ||
            @inter_traces[data.path][:method_lines][data.lineno][:kind] == :Block && data.event == :b_call
+          @stack.push('')
           @inter_traces[data.path][:method_lines][data.lineno][:args].each do |arg|
             # puts "ARG #{arg}"
             if arg[:label] == :self
               arg[:typ] = load_type(data.binding.receiver)
+              @stack[-1] = arg[:typ][:label]
             else
               begin
                 arg[:typ] = load_type(data.binding.local_variable_get(arg[:label]))
@@ -53,17 +56,6 @@ module Deduckt
           end
         end
       end
-    end
-
-    #tp.defined_class != TracePoint && tp.defined_class != Kernel && tp.method_id != :disable && tp.method_id != :enable && tp.method_id != :inherited && tp.defined_class != Class && tp.method_id != :method_added &&
-        #!tp.path.include?("core_ext")
-
-    #tp.method_id != :new && tp.method_id != :initialize && tp.method_id != :enable && tp.method_id != :disable && caller.length > 1 &&
-         #tp.path != "deduckt.rb" && !tp.path.include?("did_you_mean") &&
-         #!tp.path.include?("core_ext")
-
-    class Type
-      attr_reader :kind, :args, :return_type, :label
     end
 
     def load_type(arg)
@@ -142,13 +134,13 @@ module Deduckt
     end
 
     def load_method(args, return_type)
-      {kind: :NodeMethod, args: args.map { |arg| load_type(arg) }, return_type: load_type(return_type)}
+      {kind: :NodeMethod, args: args.map { |arg| load_type(arg) }, returnType: load_type(return_type)}
     end
 
     def union(left, right)
       case left[:kind]
       when :Method
-        same = left[:args] == right[:args] and left[:return_type] == right[:return_type]
+        same = left[:args] == right[:args] and left[:returnType] == right[:returnType]
         if same
           [left, true]
         else
@@ -304,7 +296,7 @@ module Deduckt
           if node.type == :def || node.type == :defs
             index = {def: 0, defs: 1}[node.type]
             @is_iterator = false
-            value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[index]}, args: [], code: [], isIterator: false, typ: nil, return_type: nil}
+            value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[index]}, args: [], code: [], isIterator: false, typ: nil, returnType: nil}
             value[:args] = [{kind: :Variable, label: :self, typ: nil}] + node.children[index + 1].children.map { |it| process_node it }
             value[:code] = node.children[index + 2 .. -1].map { |it| process_node it }
             value[:line] = line
@@ -319,7 +311,7 @@ module Deduckt
             @inter_ast[:method_lines][line] = value
             return value.tap { |t| t[:line] = line; t[:column] = column }
           elsif node.type == :block
-            value = {kind: :Block, label: {typ: :Variable, label: ""}, args: [], code: [], typ: nil, return_type: nil}
+            value = {kind: :Block, label: {typ: :Variable, label: ""}, args: [], code: [], typ: nil, returnType: nil}
             value[:args] = node.children[1].children.map { |it| process_node it }
             value[:code] = node.children[2 .. -1].map { |it| process_node it }
             @inter_ast[:method_lines][line] = value
@@ -341,6 +333,11 @@ module Deduckt
             @inter_ast[:lines][line].push(value)
             value
           else
+            if node.type == :if && node.children[1].nil?
+              value[:children][0] = {kind: :UnaryOp, children: [{kind: :Operator, label: "not"}, value[:children][0]], typ: {kind: :Simple, label: "Bool"}}
+              value[:children][1] = value[:children][2]
+              value[:children].pop
+            end
             value
           end.tap { |t| if !node.nil?; t[:line] = line; t[:column] = column; end }
         elsif node.class == Integer
@@ -587,6 +584,7 @@ module Deduckt
            docstring: klass[:docstring] || [],
            typ: @inter_types[klass[:children][0][:label]]}
         end
+        
       end
       @inter_traces['%types'] = $types_no_definition
     end
@@ -599,6 +597,9 @@ module Deduckt
     end
 
     def module_of_interest?(path)
+      if path.include?('mixin')
+        return true
+      end
       for pattern in @module_patterns
         if pattern == 'rubocop'
           return false if not path.include?(pattern)
@@ -616,8 +617,8 @@ module Deduckt
         next if tp.method_id == :method_added or not trace_run.module_of_interest?(tp.path)
 
         # TODO require require_relative
+
         if ![:new, :initialize, :enable, :disable, :require_relative, :require].include?(tp.method_id) #tp.path != "deduckt.rb" &&
-          # p tp
           if !@inter_traces.key?(tp.path)
             @inter_traces[tp.path] = generate_ast(tp.path)
           end
@@ -629,15 +630,36 @@ module Deduckt
         next if tp.method_id == :method_added or not trace_run.module_of_interest?(tp.path)
 
         if ![:new, :initialize, :enable, :disable].include?(tp.method_id)
-          path, line, *_ = caller[1].split(':')
-          line = line.to_i
+          from_path, from_line, *_ = caller[1].split(':')
+          from_line = from_line.to_i
           path = tp.path
           line = tp.lineno
           typ = load_type(tp.return_value)
-          if @inter_traces.key?(path) && @inter_traces[path][:lines].key?(line)
-            @inter_traces[path][:lines][line].each do |a|
+          send_in = false
+          send_position = [path, line]
+
+          if @inter_traces.key?(from_path)
+            if @inter_traces[from_path][:lines].key?(from_line)
+              send_in = true
+              send_position = [from_path, from_line]
+            end
+          end  
+          if !send_in && @inter_traces.key?(path)
+            if @inter_traces[path][:lines].key?(line)
+              send_in = true
+            end
+          end
+          if send_in
+            @inter_traces[send_position[0]][:lines][send_position[1]].each do |a|
               if a[:children][1][:kind] == :Variable && a[:children][1][:label] == tp.method_id
                 a[:typ] = typ
+                if a[:children][0][:kind] == :Nil && @stack[-1] != '' && tp.method_id != :include
+                  a[:children][0] = {kind: :Self}
+                  if tp.method_id == :check_name
+                    p tp.method_id
+                  end
+                end
+                
               end
             end
           end
@@ -648,7 +670,7 @@ module Deduckt
               kind = @inter_traces[tp.path][:method_lines][method_line][:kind]
               is_block = tp.event == :b_return
               if kind == :Block && is_block || kind == :NodeMethod && !is_block
-                @inter_traces[tp.path][:method_lines][method_line][:return_type] = typ
+                @inter_traces[tp.path][:method_lines][method_line][:returnType] = typ
               end
             end
           end
@@ -671,6 +693,7 @@ module Deduckt
         $t.disable
         $t2.disable
 
+        @inter_traces = Hash[@inter_traces.select { |path, file| !path.include?('mixin') }]
         generate
       end
     end
