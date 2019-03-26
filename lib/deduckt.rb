@@ -14,7 +14,7 @@ module Deduckt
 
   PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
 
-  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try}
+  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try, rescue: :Except, resbody: :Code}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
   NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase, :RubySelf]
@@ -67,7 +67,7 @@ module Deduckt
       #$t2.disable
 
       klass = arg.class
-      # puts "TYPE #{arg} #{klass}"
+      # puts "TYPE #{arg} #{klass.name.to_sym}"
       if !@processing.key?(klass.name)
         @processing[klass.name] = []
         variables = arg.instance_variables.map do |a|
@@ -75,7 +75,19 @@ module Deduckt
         end
         @processing[klass.name] = variables
       else
-        return {kind: :Simple, label: klass.name.to_sym}
+        if klass == Integer
+          return {kind: :Simple, label: "Int"}
+        elsif klass == Float
+          return {kind: :Simple, label: "Float"}
+        elsif klass == NilClass
+          return {kind: :Simple, label: "Void"}
+        elsif klass == String
+          return {kind: :Simple, label: "String"}
+        elsif klass == TrueClass || klass == FalseClass
+          return {kind: :Simple, label: "Bool"}
+        else
+          return {kind: :Simple, label: klass.name.to_sym}
+        end
       end
       res = if klass == Integer
         {kind: :Simple, label: "Int"}
@@ -296,7 +308,7 @@ module Deduckt
           if node.type == :def || node.type == :defs
             index = {def: 0, defs: 1}[node.type]
             @is_iterator = false
-            value = {kind: :NodeMethod, label: {typ: :Variable, label: node.children[index]}, args: [], code: [], isIterator: false, typ: nil, returnType: nil}
+            value = {kind: :NodeMethod, label: {kind: :Variable, label: node.children[index]}, args: [], code: [], isIterator: false, typ: nil, returnType: nil}
             value[:args] = [{kind: :Variable, label: :self, typ: nil}] + node.children[index + 1].children.map { |it| process_node it }
             value[:code] = node.children[index + 2 .. -1].map { |it| process_node it }
             value[:line] = line
@@ -311,7 +323,7 @@ module Deduckt
             @inter_ast[:method_lines][line] = value
             return value.tap { |t| t[:line] = line; t[:column] = column }
           elsif node.type == :block
-            value = {kind: :Block, label: {typ: :Variable, label: ""}, args: [], code: [], typ: nil, returnType: nil}
+            value = {kind: :Block, label: {kind: :Variable, label: ""}, args: [], code: [], typ: nil, returnType: nil}
             value[:args] = node.children[1].children.map { |it| process_node it }
             value[:code] = node.children[2 .. -1].map { |it| process_node it }
             @inter_ast[:method_lines][line] = value
@@ -321,12 +333,14 @@ module Deduckt
           end
           value = {kind: get_kind(node.type), children: node.children.map { |it| process_node it }, typ: nil}
           if node.type == :send
-            if value[:children][0][:kind] == :RubyConst && value[:children][1][:kind] == :Variable && value[:children][1][:label] == :new
+            if value[:children][0][:kind] == :RubyConst && (value[:children][1][:kind] == :Variable && value[:children][1][:label] == :new || value[:children][1][:kind] == :Symbol && value[:children][1][:text] == :new)
               value = {kind: :New, children: [{kind: :Variable, label: value[:children][0][:label]}] + value[:children][2 .. -1]}
             end
-            value[:children][1][:kind] = :Variable
-            value[:children][1][:label] = value[:children][1][:text]
-            value[:children][1].delete :text
+            if value[:children].length > 1
+              value[:children][1][:kind] = :Variable
+              value[:children][1][:label] = value[:children][1][:text]
+              value[:children][1].delete :text
+            end
             if !@inter_ast[:lines].key?(line)
               @inter_ast[:lines][line] = []
             end
@@ -436,7 +450,7 @@ module Deduckt
       end
 
       def process_block_pass(node)
-        arg = node.children[0].children[0].nil? ? "" : node.children[0].children[0][1 .. -1]
+        arg = node.children[0].children[0].nil? ? "" : node.children[0].children[0][0 .. -1]
         {kind: :Block, args: [{kind: :Variable, label: :it}], code: [{kind: :Attribute, children: [{kind: :Variable, label: :it}, {kind: :String, text: arg}]}]}
       end
 
@@ -653,7 +667,7 @@ module Deduckt
             @inter_traces[send_position[0]][:lines][send_position[1]].each do |a|
               if a[:children][1][:kind] == :Variable && a[:children][1][:label] == tp.method_id
                 a[:typ] = typ
-                if a[:children][0][:kind] == :Nil && @stack[-1] != '' && tp.method_id != :include
+                if a[:children][0][:kind] == :Nil && @stack[-1] != '' && ![:include, :p].include?(tp.method_id)
                   a[:children][0] = {kind: :Self}
                   if tp.method_id == :check_name
                     p tp.method_id
