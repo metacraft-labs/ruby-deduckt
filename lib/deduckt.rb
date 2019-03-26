@@ -667,7 +667,7 @@ module Deduckt
             @inter_traces[send_position[0]][:lines][send_position[1]].each do |a|
               if a[:children][1][:kind] == :Variable && a[:children][1][:label] == tp.method_id
                 a[:typ] = typ
-                if a[:children][0][:kind] == :Nil && @stack[-1] != '' && ![:include, :p].include?(tp.method_id)
+                if a[:children][0][:kind] == :Nil && @stack[-1] != '' && ![:include, :p, :String].include?(tp.method_id)
                   a[:children][0] = {kind: :Self}
                   if tp.method_id == :check_name
                     p tp.method_id
