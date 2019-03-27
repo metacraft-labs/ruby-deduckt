@@ -48,7 +48,9 @@ module Deduckt
               @stack[-1] = arg[:typ][:label]
             else
               begin
-                arg[:typ] = load_type(data.binding.local_variable_get(arg[:label]))
+                if arg[:typ].nil? 
+                  arg[:typ] = load_type(data.binding.local_variable_get(arg[:label]))
+                end
               rescue
                 arg[:typ] = {kind: :Simple, label: "Void"}
               end
@@ -85,6 +87,8 @@ module Deduckt
           return {kind: :Simple, label: "String"}
         elsif klass == TrueClass || klass == FalseClass
           return {kind: :Simple, label: "Bool"}
+        elsif klass == Array
+          return {kind: :Compound, original: {kind: :Simple, label: "Sequence"}, args: [load_type(arg[0])]}
         else
           return {kind: :Simple, label: klass.name.to_sym}
         end
@@ -667,7 +671,8 @@ module Deduckt
             @inter_traces[send_position[0]][:lines][send_position[1]].each do |a|
               if a[:children][1][:kind] == :Variable && a[:children][1][:label] == tp.method_id
                 a[:typ] = typ
-                if a[:children][0][:kind] == :Nil && @stack[-1] != '' && ![:include, :p, :String, :format, :require].include?(tp.method_id)
+                hack = tp.method_id == :check_body_lines
+                if a[:children][0][:kind] == :Nil && (@stack[-1] != '' || hack) && ![:include, :p, :String, :format, :require].include?(tp.method_id)
                   a[:children][0] = {kind: :Self}
                   if tp.method_id == :check_name
                     p tp.method_id
