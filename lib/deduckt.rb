@@ -16,7 +16,7 @@ module Deduckt
 
   KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try, rescue: :Except, resbody: :Code}
 
-  OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||"]
+  OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||", :"!"]
   NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase, :RubySelf]
 
   class TraceRun
@@ -522,12 +522,16 @@ module Deduckt
           if m[:children][1][:kind] == :Variable
             m[:children][1] = {kind: :String, text: m[:children][1][:label]}
           end
-          if m[:kind] == :Send && OPERATORS.include?(m[:children][1][:text].to_sym)
+          if (m[:kind] == :Send || m[:kind] == :Attribute) && OPERATORS.include?(m[:children][1][:text].to_sym)
             arg_index = -1
             op = m[:children][1]
             op[:kind] = :Operator
             op[:label] = op[:text]
-            m = {kind: :BinOp, children: [op, m[:children][0], m[:children][2]], typ: m[:typ]}
+            if !m[:children][2].nil?
+              m = {kind: :BinOp, children: [op, m[:children][0], m[:children][2]], typ: m[:typ]}
+            else
+              m = {kind: :UnaryOp, children: [op, m[:children][0]], typ: m[:typ]}
+            end
           elsif m[:kind] == :Send && m[:children][1][:text].to_sym == :[]
             m = {kind: :Index, children: [m[:children][0], m[:children][2]], typ: m[:typ]}
           end
