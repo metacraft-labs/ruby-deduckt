@@ -1,4 +1,4 @@
-require "deduckt/version"
+require 'deduckt/version'
 require 'json'
 require 'parser/ruby25'
 require 'ast'
@@ -6,16 +6,15 @@ require 'set'
 
 # Praise the Lord!
 
-
-
-
-
 module Tools
-  extend self
-  class Value
-    attr_accessor :kind, :label, :children, :typ, :args, :code, :line, :column, :text, :i, :f, :return_type, :methods, :fields, :docstring
+  module_function
 
-    def initialize(kind:, label: nil, children: nil, typ: nil, is_iterator: nil, is_class: nil, args: nil, code: nil, line: -1, column: -1, text: nil, i: nil, f: nil, val: nil, return_type: nil, methods: nil, fields: nil, docstring: nil)
+  SIMPLE_TYPES = {}
+
+  class Value
+    attr_accessor :kind, :label, :children, :typ, :args, :code, :line, :column, :text, :i, :f, :return_type, :methods, :fields, :docstring, :declaration
+
+    def initialize(kind:, label: nil, children: nil, typ: nil, is_iterator: nil, is_class: nil, args: nil, code: nil, line: -1, column: -1, text: nil, i: nil, f: nil, val: nil, return_type: nil, methods: nil, fields: nil, docstring: nil, declaration: nil)
       @kind = kind
       @label = label
       @children = children
@@ -34,13 +33,14 @@ module Tools
       @methods = methods
       @fields = fields
       @docstring = docstring
+      @declaration = declaration
     end
 
-    def to_json(depth=0)
+    def to_json(depth = 0)
       # i prefer this : simpler to map to Nim and optimize than @kwargs meta
-      labels = [:kind, :label, :children, :typ, :isIterator, :isClass, :args, :code, :line, :column, :text, :i, :f, :val, :return_type, :methods, :fields, :docstring]
-      values = [@kind, @label, @children, @typ, @is_iterator, @is_class, @args, @code, @line, @column, @text, @i, @f, @val, @return_type, @methods, @fields, @docstring]
-      Hash[labels.zip(values).select { |l, v| !v.nil? }.map { |l, v| [l, v] }].to_json(depth)
+      labels = [:kind, :label, :children, :typ, :isIterator, :isClass, :args, :code, :line, :column, :text, :i, :f, :val, :returnType, :methods, :fields, :docstring, :declaration]
+      values = [@kind, @label, @children, @typ, @is_iterator, @is_class, @args, @code, @line, @column, @text, @i, @f, @val, @return_type, @methods, @fields, @docstring, @declaration]
+      Hash[labels.zip(values).reject { |l, v| v.nil? }.map { |l, v| [l, v] }].to_json(depth)
     end
 
     def [](c)
@@ -65,8 +65,8 @@ module Tools
   p val(:Variable).to_json
 
   def simple(name)
-    @simple_types[name] ||= {kind: :Simple, label: name}
-    @simple_types[name]
+    SIMPLE_TYPES[name] ||= {kind: :Simple, label: name}
+    SIMPLE_TYPES[name]
   end
 
   def operator(name)
@@ -101,21 +101,27 @@ end
 module Deduckt
   extend Tools
 
-  TABLE_TYPE = {kind: :Generic, label: "Table", genericArgs: ["K", "V"]}
+  TABLE_TYPE = {kind: :Generic, label: 'Table', genericArgs: ['K', 'V']}
   # object types
   INTER_CLASS = 0
   INTER_METHOD = 1
   INTER_CALL = 2
   INTER_VARIABLE = 3
 
-  PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
+  PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: 'echo'}] + a , typ: {kind: :Nil} } } }
 
   # map them to interlang
-  KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try, rescue: :Except, resbody: :Code}
+  KINDS = {
+    lvasgn: :Assign, array: :Sequence, hash: :NimTable, 
+    begin: :Code, dstr: :Docstring, return: :Return,
+    yield: :Yield, next: :Continue, break: :Break,
+    False: :Bool, True: :Bool, while: :While,
+    when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try,
+    rescue: :Except, resbody: :Code}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||", :"!"]
   NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase, :RubySelf]
-  VOID_TYPE = {kind: :Simple, label: "Void"}
+  VOID_TYPE = {kind: :Simple, label: 'Void'}
   NIL_VALUE = val(:Nil)
 
 
@@ -141,11 +147,13 @@ module Deduckt
     # adding directly trace information
     def trace_calls(data)
       @call_lines.push(data.lineno)
-      if @inter_traces[data.path][:method_lines].key?(data.lineno)
-        if @inter_traces[data.path][:method_lines][data.lineno].kind == :NodeMethod && data.event != :b_call ||
-           @inter_traces[data.path][:method_lines][data.lineno].kind == :Block && data.event == :b_call
+      method_lines = @inter_traces[data.path][:method_lines]
+      if method_lines.key?(data.lineno)
+        m = method_lines[data.lineno]
+        if m.kind == :NodeMethod && data.event != :b_call ||
+           m.kind == :Block && data.event == :b_call
           @stack.push('')
-          @inter_traces[data.path][:method_lines][data.lineno].args.each do |arg|
+          m.args.each do |arg|
             if arg.label == :self
               arg.typ = load_type(data.binding.receiver)
               @stack[-1] = arg.typ[:label]
@@ -164,12 +172,27 @@ module Deduckt
       end
     end
 
+    def load_hash_type(arg)
+      if arg.length == 0
+        key = VOID_TYPE
+        value = key
+      else
+        arg.each do |k, v|
+          key = load_type(k)
+          value = load_type(v)
+          break
+        end
+      end
+      {kind: :Compound, args: [key, value], original: TABLE_TYPE}
+    end
+
     def load_type(arg)
       if arg.class.nil?
         return VOID_TYPE
       end
 
       klass = arg.class
+      variables = []
       if klass == Integer
         return simple(:Int)
       elsif klass == Float
@@ -181,19 +204,9 @@ module Deduckt
       elsif klass == TrueClass || klass == FalseClass
         return simple(:Bool)
       elsif klass == Hash
-        if arg.length == 0
-          key = VOID_TYPE
-          value = key
-        else
-          arg.each do |k, v|
-            key = load_type(k)
-            value = load_type(v)
-            break
-          end
-        end
-        {kind: :Compound, args: [key, value], original: TABLE_TYPE}
+        return load_hash_type(arg)
       elsif klass == Symbol
-        simple(:Symbol)
+        return simple(:Symbol)
       elsif klass == Array
         return {kind: :Compound, original: simple(:Sequence), args: [load_type(arg[0])]}
 
@@ -201,7 +214,7 @@ module Deduckt
         if !@processing.key?(klass.name)
           @processing[klass.name] = []
           variables = arg.instance_variables.map do |a|
-            load_type(arg.instance_variable_get(a)).tap { |b| b[:fieldLabel] = a.to_s[1 .. -1] }
+            load_type(arg.instance_variable_get(a)).tap { |b| b[:fieldLabel] = a.to_s[1 .. -1] if b }
           end
           @processing[klass.name] = variables
         else    
@@ -212,11 +225,11 @@ module Deduckt
       
       if klass.is_a?(Class) && variables.length > 0
         # ok for now
-        if !@inter_types[res[:label].to_sym]
-          label = res[:label].to_sym
-          res[:kind] = :Object
+        if !@inter_types[klass.name.to_sym]
+          label = klass.name.to_sym
+          res = {kind: :Object, label: label}
 
-          if @outdir != "test"
+          if @outdir != 'test'
             res[:fields] = [] # TODO inheritance variables
           else
             res[:fields] = variables
@@ -240,7 +253,7 @@ module Deduckt
     def union(left, right)
       case left[:kind]
       when :Method
-        same = left[:args] == right[:args] and left[:returnType] == right[:returnType]
+        same = left[:args] == right[:args] && left[:returnType] == right[:returnType]
         if same
           [left, true]
         else
@@ -362,7 +375,7 @@ module Deduckt
             value = val(
               :NodeMethod,
               label: variable(node.children[index]),
-              args: [variable(:self) + node.children[index + 1].children.map { |it| process_node it }],
+              args: [variable(:self)] + node.children[index + 1].children.map { |it| process_node it },
               code: node.children[index + 2 .. -1].map { |it| process_node it },
               line: line,
               column: column,
@@ -375,7 +388,7 @@ module Deduckt
           elsif node.type == :block
             value = val(
               :Block,
-              label: variable(""),
+              label: variable(''),
               args: node.children[1].children.map { |it| process_node it },
               code: node.children[2 .. -1].map { |it| process_node it })
             @inter_ast[:method_lines][line] = value
@@ -402,10 +415,10 @@ module Deduckt
             value
           else
             if node.type == :if && node.children[1].nil?
-              value[0] = node(
+              value[0] = val(
                 :UnaryOp,
-                [operator(:not), value[0]],
-                simple(:Bool)
+                children: [operator(:not), value[0]],
+                typ: simple(:Bool)
               )
               value.children[1] = value[2]
               value.children.pop
@@ -439,7 +452,7 @@ module Deduckt
           left.label = left.text
           left.text = nil
         end
-        node(:AugOp, [left, op, right], nil)
+        val(:AugOp, children: [left, op, right])
       end
 
       def process_or_asgn(node)
@@ -451,7 +464,7 @@ module Deduckt
           left.label = left.text
           left.text = nil
         end
-        node(:Assign, [left, node(:BinOp, [left, op, right], nil)], nil)
+        val(:Assign, children: [left, val(:BinOp, children: [left, op, right])])
       end
 
       def process_int(node)
@@ -528,7 +541,7 @@ module Deduckt
       end
 
       def process_block_pass(node)
-        arg = node.children[0].children[0].nil? ? "" : node.children[0].children[0][0 .. -1]
+        arg = node.children[0].children[0].nil? ? '' : node.children[0].children[0][0 .. -1]
         
         # proc(it: typ): returnType { it.arg }
         val(
@@ -591,60 +604,82 @@ module Deduckt
     end
 
 
+    def compile_call(child)
+      arg_index = 1
+      m =if !child.typ.nil? || !child[2].nil?
+        val(:Call, children: child.children[1 .. -1].map { |l| compile_child l }, typ: child.typ)
+      else
+        arg_index = -1
+        child.children[1]
+      end
+      [m, arg_index]
+    end
+
+    def compile_send(child)
+      puts child.to_json
+      p child.typ
+      puts child[2].to_json
+      m = if !child.typ.nil? || !child[2].nil?
+        arg_index = 2
+        val(:Send, children: child.children.map { |l| compile_child l }, typ: child.typ)
+      else
+        arg_index = -1
+        val(:Attribute, children: child.children.map { |l| compile_child l }, typ: child.typ)
+      end
+      if m[1].kind == :Variable
+        m[1] = string(m[1].label)
+      end
+      if [:Send, :Attribute].include?(m.kind) && OPERATORS.include?(m[1].text.to_sym)
+        arg_index = -1
+        op = operator(m[1].text)
+        if !m[2].nil?
+          left, right = m[0], m[2]
+          m = val(:BinOp, children: [op, left, right], typ: m.typ)
+        else
+          value = m[0]
+          m = val(:UnaryOp, children: [op, value], typ: m.typ)
+        end
+      elsif m.kind == :Send && m[1].text.to_sym == :[]
+        left, right = m[0], m[2]
+        m = val(:Index, children: [left, right], typ: m.typ)
+      end
+      [m, arg_index]
+    end
+
+    def compile_invoke(child)
+      if child[0].kind == :Nil
+        compile_call(child)    
+      else
+        compile_send(child)
+      end
+    end
+      
+    def compile_kwargs(m, arg_index)
+      new_args = []
+      m.children[arg_index .. -1].each do |arg|
+        if arg.kind == :NimTable
+          new_args += arg.children
+        else
+          new_args.push(arg)
+        end
+      end
+
+      m.children = m.children[0 .. arg_index - 1] + new_args
+      m
+    end
+
     def compile_child child
       if child.nil?
         return NIL_VALUE
       end
       if child.kind == :RubySend
-        m = if child[0].kind == :Nil
-          arg_index = 1
-          if !child.typ.nil? || !child[2].nil?
-            val(:Call, children: child.children[1 .. -1].map { |l| compile_child l }, typ: child.typ)
-          else
-            arg_index = -1
-            child.children[1]
-          end
-        else
-          m = if !child.typ.nil? || !child[2].nil?
-            arg_index = 2
-            val(:Send, children: child.children.map { |l| compile_child l }, typ: child.typ)
-          else
-            arg_index = -1
-            val(:Attribute, children: child.children.map { |l| compile_child l }, typ: child.typ)
-          end
-          if m[1].kind == :Variable
-            m[1] = string(m[1].label)
-          end
-          if [:Send, :Attribute].include?(m.kind) && OPERATORS.include?(m[1].text.to_sym)
-            arg_index = -1
-            op = operator(m[1].text)
-            if !m[2].nil?
-              left, right = m[0], m[2]
-              m = val(:BinOp, children: [op, left, right], typ: m.typ)
-            else
-              value = m[0]
-              m = val(:UnaryOp, children: [op, value], typ: m.typ)
-            end
-          elsif m.kind == :Send && m[1].text.to_sym == :[]
-            left, right = m[0], m[2]
-            m = val(:Index, children: [left, right], typ: m.typ)
-          end
-          m
-        end
+        m, arg_index = compile_invoke(child)
         if arg_index != -1
-          new_args = []
-
-          m.children[arg_index .. -1].each do |arg|
-            if arg.kind == :NimTable
-              new_args += arg.children
-            else
-              new_args.push(arg)
-            end
-          end
-
-          m.children = m.children[0 .. arg_index - 1] + new_args
+          m = compile_kwargs(m, arg_index)
         end
-        m.tap { |t| t.line = child.line; t.column = child.column }
+        m.line = child.line
+        m.column = child.column
+        m
       elsif !child.children.nil?
         res = child
         res.children = child.children.map { |it| compile_child it }
@@ -686,12 +721,12 @@ module Deduckt
           if mercy.length == 1 && mercy[0].kind == :Code
             children = mercy[0].children
             mercy = mercy[0].children.select { |n| n.kind == :NodeMethod }
-            b = children.select { |n| n.kind != :NodeMethod }
+            b = children.reject { |n| n.kind == :NodeMethod }
             file[:main] += b.map { |it| compile_child(it) }
           end
 
           if @inter_types.key?(label)
-            @inter_types[label].base = parent
+            @inter_types[label][:base] = parent
           end
           $types_no_definition.delete label
 
@@ -712,28 +747,28 @@ module Deduckt
       compile @inter_traces
       #p @outdir
       #p @inter_traces.length
-      File.write(File.join(@outdir, "lang_traces.json"), JSON.pretty_generate(@inter_traces))
+      File.write(File.join(@outdir, 'lang_traces.json'), JSON.pretty_generate(@inter_traces))
     end
 
     def module_of_interest?(path)
       if path.include?('mixin')
         return true
       end
-      for pattern in @module_patterns
+      @module_patterns.each do |pattern|
         if pattern == 'rubocop'
-          return false if not path.include?(pattern)
+          return false if !path.include?(pattern)
         else
-          return false if not path.include?('/' + pattern)
+          return false if !path.include?('/' + pattern)
         end
       end
       true
     end
 
-    def execute(load=true)
+    def execute(load = true)
       trace_run = self
 
       $t = TracePoint.new(:call, :c_call, :b_call) do |tp|
-        next if tp.method_id == :method_added or not trace_run.module_of_interest?(tp.path)
+        next if tp.method_id == :method_added || !trace_run.module_of_interest?(tp.path)
 
         # TODO require require_relative
 
@@ -746,7 +781,7 @@ module Deduckt
       end
 
       $t2 = TracePoint.new(:return, :c_return, :b_return) do |tp|
-        next if tp.method_id == :method_added or not trace_run.module_of_interest?(tp.path)
+        next if tp.method_id == :method_added || !trace_run.module_of_interest?(tp.path)
 
         if ![:new, :initialize, :enable, :disable].include?(tp.method_id)
           from_path, from_line, *_ = caller[1].split(':')
@@ -813,7 +848,7 @@ module Deduckt
         $t.disable
         $t2.disable
 
-        @inter_traces = Hash[@inter_traces.select { |path, file| !path.include?('mixin') }]
+        @inter_traces = Hash[@inter_traces.reject { |path, file| path.include?('mixin') }]
         generate
       end
     end
@@ -821,8 +856,8 @@ module Deduckt
 end
 
 def deduckt
-  outdir = ENV["DEDUCKT_OUTPUT_DIR"]
-  module_patterns = ENV["DEDUCKT_MODULE_PATTERNS"].split ' '
+  outdir = ENV['DEDUCKT_OUTPUT_DIR']
+  module_patterns = ENV['DEDUCKT_MODULE_PATTERNS'].split ' '
 
-  Deduckt::TraceRun.new("", [], {outdir: outdir, module_patterns: module_patterns}).execute(load=false)
+  Deduckt::TraceRun.new('', [], {outdir: outdir, module_patterns: module_patterns}).execute(load = false)
 end
