@@ -4,7 +4,103 @@ require 'parser/ruby25'
 require 'ast'
 require 'set'
 
+# Praise the Lord!
+
+
+
+
+
+module Tools
+  extend self
+  class Value
+    attr_accessor :kind, :label, :children, :typ, :args, :code, :line, :column, :text, :i, :f, :return_type, :methods, :fields, :docstring
+
+    def initialize(kind:, label: nil, children: nil, typ: nil, is_iterator: nil, is_class: nil, args: nil, code: nil, line: -1, column: -1, text: nil, i: nil, f: nil, val: nil, return_type: nil, methods: nil, fields: nil, docstring: nil)
+      @kind = kind
+      @label = label
+      @children = children
+      @typ = typ
+      @is_iterator = is_iterator
+      @is_class = is_class
+      @args = args
+      @code = code
+      @line = line
+      @column = column
+      @text = text
+      @i = i
+      @f = f
+      @val = val
+      @return_type = return_type
+      @methods = methods
+      @fields = fields
+      @docstring = docstring
+    end
+
+    def to_json(depth=0)
+      # i prefer this : simpler to map to Nim and optimize than @kwargs meta
+      labels = [:kind, :label, :children, :typ, :isIterator, :isClass, :args, :code, :line, :column, :text, :i, :f, :val, :return_type, :methods, :fields, :docstring]
+      values = [@kind, @label, @children, @typ, @is_iterator, @is_class, @args, @code, @line, @column, @text, @i, @f, @val, @return_type, @methods, @fields, @docstring]
+      Hash[labels.zip(values).select { |l, v| !v.nil? }.map { |l, v| [l, v] }].to_json(depth)
+    end
+
+    def [](c)
+      if @children
+        @children[c]
+      end
+    end
+
+    def []=(c, value)
+      @children ||= []
+      @children[c] = value
+    end
+
+    def length
+      @children ? @children.length : 0
+    end
+
+  end
+  def val(kind, **kwargs)
+    Value.new(kind: kind, **kwargs)
+  end
+  p val(:Variable).to_json
+
+  def simple(name)
+    @simple_types[name] ||= {kind: :Simple, label: name}
+    @simple_types[name]
+  end
+
+  def operator(name)
+    val(:Operator, label: name)
+  end
+
+  def variable(name)
+    val(:Variable, label: name)
+  end
+
+  def int(i)
+    val(:Int, i: i)
+  end
+
+  def float(f)
+    val(:Float, f: f)
+  end
+
+  def bool(b)
+    val(:Bool, val: b)
+  end
+
+  def string(text)
+    val(:String, text: text)
+  end
+
+  def symbol(text)
+    val(:Symbol, text: text)
+  end
+end
+
 module Deduckt
+  extend Tools
+
   TABLE_TYPE = {kind: :Generic, label: "Table", genericArgs: ["K", "V"]}
   # object types
   INTER_CLASS = 0
@@ -14,45 +110,53 @@ module Deduckt
 
   PATTERN_STDLIB = {puts: -> a { {kind: INTER_CALL, children: [{kind: INTER_VARIABLE, label: "echo"}] + a , typ: {kind: :Nil} } } }
 
+  # map them to interlang
   KINDS = {lvasgn: :Assign, array: :Sequence, hash: :NimTable, begin: :Code, dstr: :Docstring, return: :Return, yield: :Yield, next: :Continue, break: :Break, False: :Bool, True: :Bool, while: :While, when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try, rescue: :Except, resbody: :Code}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||", :"!"]
   NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase, :RubySelf]
+  VOID_TYPE = {kind: :Simple, label: "Void"}
+  NIL_VALUE = val(:Nil)
+
 
   class TraceRun
+    extend Tools
+    include Tools
+
     def initialize(program, args, options)
       @program = program
       @args = args
-      @module_patterns = options[:module_patterns]
-      @outdir = options[:outdir]
+      @module_patterns = options[:module_patterns] # matching modules with patterns
+      @outdir = options[:outdir] # output directory for json
       @trace = []
-      @lines = []
       @inter_traces = {}
       @inter_types = {}
-      @stack = []
+      @stack = [] # information for self
       @call_lines = []
-      @current_block = ""
-      @processing = {}
+      @simple_types = {}
+      @processing = {} # processing types without looping too much in the same type
     end
 
+    # each call invokes that so make it not slow
+    # adding directly trace information
     def trace_calls(data)
       @call_lines.push(data.lineno)
       if @inter_traces[data.path][:method_lines].key?(data.lineno)
-        if @inter_traces[data.path][:method_lines][data.lineno][:kind] == :NodeMethod && data.event != :b_call ||
-           @inter_traces[data.path][:method_lines][data.lineno][:kind] == :Block && data.event == :b_call
+        if @inter_traces[data.path][:method_lines][data.lineno].kind == :NodeMethod && data.event != :b_call ||
+           @inter_traces[data.path][:method_lines][data.lineno].kind == :Block && data.event == :b_call
           @stack.push('')
-          @inter_traces[data.path][:method_lines][data.lineno][:args].each do |arg|
-            # puts "ARG #{arg}"
-            if arg[:label] == :self
-              arg[:typ] = load_type(data.binding.receiver)
-              @stack[-1] = arg[:typ][:label]
+          @inter_traces[data.path][:method_lines][data.lineno].args.each do |arg|
+            if arg.label == :self
+              arg.typ = load_type(data.binding.receiver)
+              @stack[-1] = arg.typ[:label]
             else
-              begin
-                if arg[:typ].nil? 
-                  arg[:typ] = load_type(data.binding.local_variable_get(arg[:label]))
+              # only if type isn't already recorded: maybe we have union it later but for now this
+              if arg.typ.nil? 
+                begin
+                  arg.typ = load_type(data.binding.local_variable_get(arg.label))
+                rescue
+                  arg.typ = VOID_TYPE
                 end
-              rescue
-                arg[:typ] = {kind: :Simple, label: "Void"}
               end
             end
           end
@@ -62,50 +166,23 @@ module Deduckt
 
     def load_type(arg)
       if arg.class.nil?
-        return {kind: :Simple, label: "Void"}
+        return VOID_TYPE
       end
-
-      #$t.disable
-      #$t2.disable
 
       klass = arg.class
-      # puts "TYPE #{arg} #{klass.name.to_sym}"
-      if !@processing.key?(klass.name)
-        @processing[klass.name] = []
-        variables = arg.instance_variables.map do |a|
-          load_type(arg.instance_variable_get(a)).tap { |b| b[:fieldLabel] = a.to_s[1 .. -1] }
-        end
-        @processing[klass.name] = variables
-      else
-        if klass == Integer
-          return {kind: :Simple, label: "Int"}
-        elsif klass == Float
-          return {kind: :Simple, label: "Float"}
-        elsif klass == NilClass
-          return {kind: :Simple, label: "Void"}
-        elsif klass == String
-          return {kind: :Simple, label: "String"}
-        elsif klass == TrueClass || klass == FalseClass
-          return {kind: :Simple, label: "Bool"}
-        elsif klass == Array
-          return {kind: :Compound, original: {kind: :Simple, label: "Sequence"}, args: [load_type(arg[0])]}
-        else
-          return {kind: :Simple, label: klass.name.to_sym}
-        end
-      end
-      res = if klass == Integer
-        {kind: :Simple, label: "Int"}
+      if klass == Integer
+        return simple(:Int)
       elsif klass == Float
-        {kind: :Simple, label: "Float"}
+        return simple(:Float)
       elsif klass == NilClass
-        {kind: :Simple, label: "Void"}
+        return VOID_TYPE
       elsif klass == String
-        {kind: :Simple, label: "String"}
+        return simple(:String)
       elsif klass == TrueClass || klass == FalseClass
-        {kind: :Simple, label: "Bool"}
+        return simple(:Bool)
       elsif klass == Hash
         if arg.length == 0
-          key = {kind: :Simple, label: "Void"}
+          key = VOID_TYPE
           value = key
         else
           arg.each do |k, v|
@@ -116,13 +193,23 @@ module Deduckt
         end
         {kind: :Compound, args: [key, value], original: TABLE_TYPE}
       elsif klass == Symbol
-        {kind: :Simple, label: "Symbol"}
+        simple(:Symbol)
+      elsif klass == Array
+        return {kind: :Compound, original: simple(:Sequence), args: [load_type(arg[0])]}
+
       else
-        {kind: :Simple, label: klass.name}
+        if !@processing.key?(klass.name)
+          @processing[klass.name] = []
+          variables = arg.instance_variables.map do |a|
+            load_type(arg.instance_variable_get(a)).tap { |b| b[:fieldLabel] = a.to_s[1 .. -1] }
+          end
+          @processing[klass.name] = variables
+        else    
+          return simple(klass.name.to_sym)
+        end
       end
-
-      # Praise the Lord!
-
+      
+      
       if klass.is_a?(Class) && variables.length > 0
         # ok for now
         if !@inter_types[res[:label].to_sym]
@@ -139,18 +226,15 @@ module Deduckt
             # p label.to_s.split('::')[-1].to_sym
             @inter_types[label.to_s.split('::')[-1].to_sym] = res
           end
-          res = {kind: :Simple, label: label} # Praise the Lord!
+          res = simple(label) # Praise the Lord!
         end
         # far simpler to just move all the classes to %types: easier to process and search
       end
-
-      #$t.enable
-      #$t2.enable
       res
     end
 
     def load_method(args, return_type)
-      {kind: :NodeMethod, args: args.map { |arg| load_type(arg) }, returnType: load_type(return_type)}
+      val(:NodeMethod, args: args.map { |arg| load_type(arg) }, return_type: load_type(return_type))
     end
 
     def union(left, right)
@@ -173,46 +257,9 @@ module Deduckt
       end
     end
 
-    def write(inputs)
-      traces = {}
-      paths = {}
-      methods = {}
-      i = 0
-      method_stream = []
-      inputs.each do |input|
-        id = "#{input[2]}.#{input[3]}"
-        if !methods.key?(id)
-          methods[id] = []
-        end
-        if input[5] == :input
-          methods[id].push([input, []])
-          method_stream.push(methods[id][-1])
-        else
-          methods[id][-1][1] = input
-          methods[id].pop
-        end
-      end
-
-      method_stream.each do |input, result|
-        if result.length == 0
-          next
-        end
-        id = "#{input[2]}.#{input[3]}"
-        if traces.key?(id)
-          traces[id], _ = union(traces[id], load_method(input[4], result[4]), nil)
-        else
-          traces[id] = load_method(input[4], result[4])
-        end
-        if not paths.key?(input[0])
-          paths[input[0]] = []
-        end
-        paths[input[0]].push(id)
-      end
-
-      [traces, paths]
-    end
-
     class InterTranslator
+      include Tools
+
       def initialize(ast, comments, input)
         @ast = ast
         @comments = comments
@@ -245,10 +292,10 @@ module Deduckt
             res[:classes].push(process_node it)
             # puts "CLASS"
             # p res[:classes][-1]
-            new_class = res[:classes][-1][:children].select { |it| it[:kind] != :RubyClass }
-            classes = res[:classes][-1][:children].select { |it| it[:kind] == :RubyClass }
+            new_class = res[:classes][-1].children.select { |it| it.kind != :RubyClass }
+            classes = res[:classes][-1].children.select { |it| it.kind == :RubyClass }
             if classes.length > 0
-              res[:classes][-1][:children] = new_class
+              res[:classes][-1].children = new_class
               res[:classes] += classes
             end
 
@@ -267,21 +314,21 @@ module Deduckt
       end
 
       def find_docstring(object)
-        i = object[:line] - 1
+        i = object.line - 1
         while i > 2
           if @raw[i].nil? || !@raw[i].lstrip.start_with?('#')
             break
           end
           if @comments.key?(i)
-            if object[:docstring].nil?
-              object[:docstring] = []
+            if object.docstring.nil?
+              object.docstring = []
             end
-            object[:docstring].push(@comments[i].gsub(/\A#+/, ''))
+            object.docstring.push(@comments[i].gsub(/\A#+/, ''))
 
           end
           i -= 1
         end
-        object[:docstring].reverse! if !object[:docstring].nil? 
+        object.docstring.reverse! if !object.docstring.nil? 
 
       end
 
@@ -312,38 +359,41 @@ module Deduckt
           if node.type == :def || node.type == :defs
             index = {def: 0, defs: 1}[node.type]
             @is_iterator = false
-            value = {kind: :NodeMethod, label: {kind: :Variable, label: node.children[index]}, args: [], code: [], isIterator: false, typ: nil, returnType: nil}
-            value[:args] = [{kind: :Variable, label: :self, typ: nil}] + node.children[index + 1].children.map { |it| process_node it }
-            value[:code] = node.children[index + 2 .. -1].map { |it| process_node it }
-            value[:line] = line
+            value = val(
+              :NodeMethod,
+              label: variable(node.children[index]),
+              args: [variable(:self) + node.children[index + 1].children.map { |it| process_node it }],
+              code: node.children[index + 2 .. -1].map { |it| process_node it },
+              line: line,
+              column: column,
+              is_iterator: @is_iterator,
+              is_class: node.type == :defs)
             find_docstring(value)
-            value[:docstring] = value[:docstring] || []
-            if node.type == :defs
-              value[:isClass] = true
-            end
-            if @is_iterator
-              value[:isIterator] = true
-            end
+            value.docstring = value.docstring || []
             @inter_ast[:method_lines][line] = value
-            return value.tap { |t| t[:line] = line; t[:column] = column }
+            return value
           elsif node.type == :block
-            value = {kind: :Block, label: {kind: :Variable, label: ""}, args: [], code: [], typ: nil, returnType: nil}
-            value[:args] = node.children[1].children.map { |it| process_node it }
-            value[:code] = node.children[2 .. -1].map { |it| process_node it }
+            value = val(
+              :Block,
+              label: variable(""),
+              args: node.children[1].children.map { |it| process_node it },
+              code: node.children[2 .. -1].map { |it| process_node it })
             @inter_ast[:method_lines][line] = value
             child = process_node node.children[0]
-            child[:children].push(value)
-            return child.tap { |t| t[:line] = line; t[:column] = column }
+            child.children.push(value)
+            child.line = line
+            child.column = column
+            return child
           end
-          value = {kind: get_kind(node.type), children: node.children.map { |it| process_node it }, typ: nil}
+          value = val(get_kind(node.type), children: node.children.map { |it| process_node it })
           if node.type == :send
-            if value[:children][0][:kind] == :RubyConst && (value[:children][1][:kind] == :Variable && value[:children][1][:label] == :new || value[:children][1][:kind] == :Symbol && value[:children][1][:text] == :new)
-              value = {kind: :New, children: [{kind: :Variable, label: value[:children][0][:label]}] + value[:children][2 .. -1]}
+            if value[0].kind == :RubyConst && (value[1].kind == :Variable && value[1].label == :new || value[1].kind == :Symbol && value[1].text == :new)
+              value = val(:New, children: [variable(value[0].label)] + value.children[2 .. -1])
             end
-            if value[:children].length > 1
-              value[:children][1][:kind] = :Variable
-              value[:children][1][:label] = value[:children][1][:text]
-              value[:children][1].delete :text
+            if value.length > 1
+              value[1].kind = :Variable
+              value[1].label = value[1].text
+              value[1].text = nil
             end
             if !@inter_ast[:lines].key?(line)
               @inter_ast[:lines][line] = []
@@ -352,110 +402,142 @@ module Deduckt
             value
           else
             if node.type == :if && node.children[1].nil?
-              value[:children][0] = {kind: :UnaryOp, children: [{kind: :Operator, label: "not"}, value[:children][0]], typ: {kind: :Simple, label: "Bool"}}
-              value[:children][1] = value[:children][2]
-              value[:children].pop
+              value[0] = node(
+                :UnaryOp,
+                [operator(:not), value[0]],
+                simple(:Bool)
+              )
+              value.children[1] = value[2]
+              value.children.pop
             end
             value
-          end.tap { |t| if !node.nil?; t[:line] = line; t[:column] = column; end }
+          end.tap { |t| if !node.nil?; t.line = line; t.column = column; end }
         elsif node.class == Integer
-          {kind: :Int, i: node, typ: nil}
+          int(node)
         elsif node.class == Float
-          {kind: :Float, f: node, typ: nil}
+          float(node)
         elsif node.class == String
-          {kind: :String, text: node, typ: nil}
+          string(node)
         elsif node.class == Symbol
-          {kind: :Symbol, text: node, typ: nil}
+          symbol(node)
         elsif node.nil?
-          {kind: :Nil, typ: nil}
+          NIL_VALUE
         end
       end
 
       def process_const(node)
-        {kind: :RubyConst, label: node.children[1]}
+        val(:RubyConst, label: node.children[1])
       end
 
       def process_op_asgn(node)
         left = process_node(node.children[0].children[0])
-        op = {kind: :Operator, label: node.children[1]}
+        op = val(:Operator, label: node.children[1])
+
         right = process_node(node.children[2])
-        if left[:kind] == :Symbol
-          left[:kind] = :Variable
-          left[:label] = left[:text]
+        if left.kind == :Symbol
+          left.kind = :Variable
+          left.label = left.text
+          left.text = nil
         end
-        {kind: :AugOp, children: [left, op, right]}
+        node(:AugOp, [left, op, right], nil)
       end
 
       def process_or_asgn(node)
         left = process_node(node.children[0].children[0])
-        op = {kind: :Operator, label: "or"}
+        op = val(:Operator, label: :or)
         right = process_node(node.children[1])
-        if left[:kind] == :Symbol
-          left[:kind] = :Variable
-          left[:label] = left[:text]
+        if left.kind == :Symbol
+          left.kind = :Variable
+          left.label = left.text
+          left.text = nil
         end
-        {kind: :Assign, children: [left, {kind: :BinOp, children: [left, op, right]}]}
+        node(:Assign, [left, node(:BinOp, [left, op, right], nil)], nil)
       end
 
       def process_int(node)
-        {kind: :Int, i: node.children[0]}
+        int(node.children[0])
       end
 
       def process_str(node)
-        {kind: :String, text: node.children[0]}
+        string(node.children[0])
       end
 
       def process_dstr(node)
-        {kind: :Docstring, text: node.children.map { |it| it.children[0] }.join }
+        val(:Docstring, text: node.children.map { |it| it.children[0] }.join)
       end
 
       def process_float(node)
-        {kind: :Float, f: node.children[0]}
+        float(node.children[0])
       end
 
       def process_sym(node)
-        {kind: :Symbol, text: node.children[0]}
+        symbol(node.children[0])
       end
 
       def process_true(node)
-        {kind: :Bool, val: true}
+        val(:Bool, val: true)
       end
 
       def process_false(node)
-        {kind: :Bool, val: false}
+        val(:Bool, val: false)
       end
 
       def process_and(node)
-        {kind: :BinOp, children: [{kind: :Operator, label: "and"}, process_node(node.children[0]), process_node(node.children[1])]}
+        val(
+          :BinOp, 
+          children: [
+            operator(:and),
+            process_node(node.children[0]),
+            process_node(node.children[1])])
       end
 
       def process_or(node)
-        {kind: :BinOp, children: [{kind: :Operator, label: "or"}, process_node(node.children[0]), process_node(node.children[1])]}
+        val(
+          :BinOp, 
+          children: [
+            operator(:and),
+            process_node(node.children[0]),
+            process_node(node.children[1])])
       end
 
       def process_ivar(node)
-        {kind: :Attribute, children: [{kind: :Self}, {kind: :String, text: node.children[0][1 .. -1]}]}
+        val(:Attribute, children: [val(:Self), string(node.children[0][1 .. -1])])
       end
 
       def process_lvar(node)
-        {kind: :Variable, label: node.children[0]}
+        variable(node.children[0])
       end
 
       def process_gvar(node)
-        {kind: :Variable, label: node.children[0]}
+        variable(node.children[0])
       end
 
       def process_ivasgn(node)
-        {kind: :Assign, children: [{kind: :Attribute, children: [{kind: :Self}, {kind: :String, text: node.children[0][1 .. -1]}]}, process_node(node.children[1])]}
+        val(
+          :Assign,
+          children: [
+            val(:Attribute,
+              children: [
+                val(:Self),
+                string(text: node.children[0][1 .. -1])]),
+            process_node(node.children[1])])
       end
 
       def process_lvasgn(node)
-        {kind: :Assign, children: [{kind: :Variable, label: node.children[0]}, process_node(node.children[1])]}
+        val(:Assign, children: [variable(node.children[0]), process_node(node.children[1])])
       end
 
       def process_block_pass(node)
         arg = node.children[0].children[0].nil? ? "" : node.children[0].children[0][0 .. -1]
-        {kind: :Block, args: [{kind: :Variable, label: :it}], code: [{kind: :Attribute, children: [{kind: :Variable, label: :it}, {kind: :String, text: arg}]}]}
+        
+        # proc(it: typ): returnType { it.arg }
+        val(
+          :Block,
+          args: [variable(:it)],
+          code: [
+            val(
+              :Attribute,
+              children: [variable(:it), string(arg)])])
       end
 
       def process_casgn(node)
@@ -465,15 +547,18 @@ module Deduckt
         end
         # how to do it when global and several have the same name? label = "#{@current_class}#{node.children[1]}"
         label = node.children[1]
-        {kind: :Assign, children: [{kind: :Variable, label: label}, process_node(value)], declaration: :Const}
+        val(
+          :Assign,
+          children: [variable(label), process_node(value)],
+          declaration: :Const)
       end
 
       def process_nil(node)
-        {kind: :Nil}
+        NIL_VALUE
       end
 
       def process_arg(node)
-        {kind: :Variable, label: node.children[0]}
+        variable(node.children[0])
       end
 
       def process_module(node)
@@ -482,10 +567,18 @@ module Deduckt
 
       def process_masgn(node)
         if node.children[0].children.length == 1
-          right = {kind: :Index, children: [node.children[1].type == :send ? process_node(node.children[1]) : process_node(node.children[1].children[0].children[0]), {kind: :Int, i: 0}]}
-          {kind: :Assign, children: [{kind: :Variable, label: node.children[0].children[0].children[-1]}, right]}
+          right = val(
+            :Index,
+            children: [
+              node.children[1].type == :send ? process_node(node.children[1]) : process_node(node.children[1].children[0].children[0]),
+              int(0)])
+          val(
+            :Assign,
+            children: [
+              variable(node.children[0].children[0].children[-1]),
+              right])
         else
-          {kind: :Nil}
+          NIL_VALUE
         end
       end
     end
@@ -500,67 +593,68 @@ module Deduckt
 
     def compile_child child
       if child.nil?
-        return {kind: :Nil}
+        return NIL_VALUE
       end
-      if child[:kind] == :RubySend
-        m = if child[:children][0][:kind] == :Nil
+      if child.kind == :RubySend
+        m = if child[0].kind == :Nil
           arg_index = 1
-          if !child[:typ].nil? || !child[:children][2].nil?
-            {kind: :Call, children: child[:children][1 .. -1].map { |l| compile_child l }, typ: child[:typ]}
+          if !child.typ.nil? || !child[2].nil?
+            val(:Call, children: child.children[1 .. -1].map { |l| compile_child l }, typ: child.typ)
           else
             arg_index = -1
-            child[:children][1]
+            child.children[1]
           end
         else
-          m = if !child[:typ].nil? || !child[:children][2].nil?
+          m = if !child.typ.nil? || !child[2].nil?
             arg_index = 2
-            {kind: :Send, children: child[:children].map { |l| compile_child l }, typ: child[:typ]}
+            val(:Send, children: child.children.map { |l| compile_child l }, typ: child.typ)
           else
             arg_index = -1
-            {kind: :Attribute, children: child[:children].map { |l| compile_child l }, typ: child[:typ]}
+            val(:Attribute, children: child.children.map { |l| compile_child l }, typ: child.typ)
           end
-          if m[:children][1][:kind] == :Variable
-            m[:children][1] = {kind: :String, text: m[:children][1][:label]}
+          if m[1].kind == :Variable
+            m[1] = string(m[1].label)
           end
-          if (m[:kind] == :Send || m[:kind] == :Attribute) && OPERATORS.include?(m[:children][1][:text].to_sym)
+          if [:Send, :Attribute].include?(m.kind) && OPERATORS.include?(m[1].text.to_sym)
             arg_index = -1
-            op = m[:children][1]
-            op[:kind] = :Operator
-            op[:label] = op[:text]
-            if !m[:children][2].nil?
-              m = {kind: :BinOp, children: [op, m[:children][0], m[:children][2]], typ: m[:typ]}
+            op = operator(m[1].text)
+            if !m[2].nil?
+              left, right = m[0], m[2]
+              m = val(:BinOp, children: [op, left, right], typ: m.typ)
             else
-              m = {kind: :UnaryOp, children: [op, m[:children][0]], typ: m[:typ]}
+              value = m[0]
+              m = val(:UnaryOp, children: [op, value], typ: m.typ)
             end
-          elsif m[:kind] == :Send && m[:children][1][:text].to_sym == :[]
-            m = {kind: :Index, children: [m[:children][0], m[:children][2]], typ: m[:typ]}
+          elsif m.kind == :Send && m[1].text.to_sym == :[]
+            left, right = m[0], m[2]
+            m = val(:Index, children: [left, right], typ: m.typ)
           end
           m
         end
         if arg_index != -1
           new_args = []
 
-          m[:children][arg_index .. -1].each do |arg|
-            if arg[:kind] == :NimTable
-              new_args += arg[:children]
+          m.children[arg_index .. -1].each do |arg|
+            if arg.kind == :NimTable
+              new_args += arg.children
             else
               new_args.push(arg)
             end
           end
 
-          m[:children] = m[:children][0 .. arg_index - 1] + new_args
+          m.children = m.children[0 .. arg_index - 1] + new_args
         end
-        m.tap { |t| t[:line] = child[:line]; t[:column] = child[:column] }
-      elsif child.key?(:children)
+        m.tap { |t| t.line = child.line; t.column = child.column }
+      elsif !child.children.nil?
         res = child
-        res[:children] = child[:children].map { |it| compile_child it }
-        if NORMAL.include?(res[:kind])
-          res[:kind] = res[:kind].to_s[4 .. -1].to_sym
+        res.children = child.children.map { |it| compile_child it }
+        if NORMAL.include?(res.kind)
+          res.kind = res.kind.to_s[4 .. -1].to_sym
         end
         res
-      elsif child.key?(:code)
+      elsif !child.code.nil?
         res = child
-        res[:code] = child[:code].map { |it| compile_child it }
+        res.code = child.code.map { |it| compile_child it }
         res
       else
         # p child
@@ -576,35 +670,38 @@ module Deduckt
         end
 
         file[:classes] = file[:classes].map do |klass|
-          parent = klass[:children][1]
-          if parent.nil? || parent[:kind] == :Nil
-            parent = {kind: :Simple, label: "Void"}
-          elsif parent[:kind] == :RubyConst
-            parent = {kind: :Simple, label: parent[:label]}
+          parent = klass[1]
+          label = klass[0].label
+          if parent.nil? || parent.kind == :Nil
+            parent = VOID_TYPE
+          elsif parent.kind == :RubyConst
+            parent = simple(parent.label)
           end
-          mercy = klass[:children][2]
-          if mercy[:kind] == :RubyBegin
-            mercy = mercy[:children]
+          mercy = klass[2]
+          if mercy.kind == :RubyBegin
+            mercy = mercy.children
           else
-            mercy = klass[:children][2 .. -1]
+            mercy = klass.children[2 .. -1]
           end
-          if mercy.length == 1 && mercy[0][:kind] == :Code
-            children = mercy[0][:children]
-            mercy = mercy[0][:children].select { |n| n[:kind] == :NodeMethod }
-            b = children.select { |n| n[:kind] != :NodeMethod }
+          if mercy.length == 1 && mercy[0].kind == :Code
+            children = mercy[0].children
+            mercy = mercy[0].children.select { |n| n.kind == :NodeMethod }
+            b = children.select { |n| n.kind != :NodeMethod }
             file[:main] += b.map { |it| compile_child(it) }
           end
-          if @inter_types.key?(klass[:children][0][:label])
-            @inter_types[klass[:children][0][:label]][:base] = parent
-          end
-          $types_no_definition.delete klass[:children][0][:label]
 
-          {kind: :Class,
-           label: klass[:children][0][:label],
-           methods: mercy.map { |met| {label: met[:label][:label], node: compile_child(met)} },
+          if @inter_types.key?(label)
+            @inter_types[label].base = parent
+          end
+          $types_no_definition.delete label
+
+          val(
+            :Class,
+           label: label,
+           methods: mercy.map { |met| {label: met.label.label, node: compile_child(met)} },
            fields: [],
-           docstring: klass[:docstring] || [],
-           typ: @inter_types[klass[:children][0][:label]]}
+           docstring: klass.docstring || [],
+           typ: @inter_types[label])
         end
         
       end
@@ -673,11 +770,11 @@ module Deduckt
           end
           if send_in
             @inter_traces[send_position[0]][:lines][send_position[1]].each do |a|
-              if a[:children][1][:kind] == :Variable && a[:children][1][:label] == tp.method_id
-                a[:typ] = typ
+              if a[1].kind == :Variable && a[1].label == tp.method_id
+                a.typ = typ
                 hack = tp.method_id == :check_body_lines
-                if a[:children][0][:kind] == :Nil && (@stack[-1] != '' || hack) && ![:include, :p, :String, :format, :require].include?(tp.method_id)
-                  a[:children][0] = {kind: :Self}
+                if a[0].kind == :Nil && (@stack[-1] != '' || hack) && ![:include, :p, :String, :format, :require].include?(tp.method_id)
+                  a[0] = val(:Self)
                   if tp.method_id == :check_name
                     p tp.method_id
                   end
@@ -690,10 +787,10 @@ module Deduckt
           if @call_lines.length > 0
             method_line = @call_lines.pop
             if @inter_traces.key?(tp.path) && @inter_traces[tp.path][:method_lines].key?(method_line)
-              kind = @inter_traces[tp.path][:method_lines][method_line][:kind]
+              kind = @inter_traces[tp.path][:method_lines][method_line].kind
               is_block = tp.event == :b_return
               if kind == :Block && is_block || kind == :NodeMethod && !is_block
-                @inter_traces[tp.path][:method_lines][method_line][:returnType] = typ
+                @inter_traces[tp.path][:method_lines][method_line].return_type = typ
               end
             end
           end
