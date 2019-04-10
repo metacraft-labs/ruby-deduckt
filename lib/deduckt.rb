@@ -156,7 +156,9 @@ module Deduckt
           m.args.each do |arg|
             if arg.label == :self
               arg.typ = load_type(data.binding.receiver)
-              @stack[-1] = arg.typ[:label]
+              if not arg.typ.nil?
+                @stack[-1] = arg.typ[:label]
+              end
             else
               # only if type isn't already recorded: maybe we have union it later but for now this
               if arg.typ.nil? 
