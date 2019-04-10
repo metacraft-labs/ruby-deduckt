@@ -30,7 +30,7 @@ bnd
 
 * Why does it analyze all the events?
 
-In the future, we might add an option to trace only a statistically significant portion of the events. We don't consider this a priority for our use case ([ruby2nim](https://github.com/metacraft-labs/py2nim)) because a porting task is not something that would be ran often and better type information is more important than speed.
+In the future, we might add an option to trace only a statistically significant portion of the events. We don't consider this a priority for our use case ([ruby2nim](https://github.com/metacraft-labs/ruby2nim)) because a porting task is not something that would be ran often and better type information is more important than speed.
 
 * How to pronounce deduckt?
 
