@@ -4,10 +4,12 @@ require 'parser/ruby25'
 require 'ast'
 require 'set'
 
-# Praise the Lord!
-
 module Tools
   module_function
+
+  # TODO: This file needs some refactoring
+  # still it's a good test of rubocop now :)
+  # it also needs to be split but for now it's easier to filter for it in tracing
 
   SIMPLE_TYPES = {}
 
@@ -856,6 +858,8 @@ module Deduckt
     end
   end
 end
+
+# Praise the Lord!
 
 def deduckt
   outdir = ENV['DEDUCKT_OUTPUT_DIR']
