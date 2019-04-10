@@ -1,15 +1,22 @@
+# Praise the Lord!
+
 require 'deduckt/version'
 require 'json'
 require 'parser/ruby25'
 require 'ast'
 require 'set'
 
+# TODO: This file needs some refactoring
+# still it's a good test of rubocop now :)
+# it also needs to be split but for now it's easier to filter for it in tracing
+# currently it uses the Tracepoint API and basically collects most relevant 
+# :call, :c_call, :b_call, :return, :c_return, :b_return events
+# :line are too many and don't seem so important, :raise are a little bit tricky to analyze
+# :thread_ are still not useful to us
+# we need to optimize this code too: i feel it can run a lot faster
 module Tools
   module_function
 
-  # TODO: This file needs some refactoring
-  # still it's a good test of rubocop now :)
-  # it also needs to be split but for now it's easier to filter for it in tracing
 
   SIMPLE_TYPES = {}
 
@@ -858,8 +865,6 @@ module Deduckt
     end
   end
 end
-
-# Praise the Lord!
 
 def deduckt
   outdir = ENV['DEDUCKT_OUTPUT_DIR']
