@@ -1,7 +1,7 @@
 # ruby-deduckt
 
 Through the powers of deductive interpretation, Deduckt will obtain the precise
-call graph of your Python programs and the type signatures of all executed functions.
+call graph of your Ruby programs and the type signatures of all executed functions.
 Created for the goals of [ruby2nim](https://github.com/metacraft-labs/ruby2nim).
 
 ## Installation
