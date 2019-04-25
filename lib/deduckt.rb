@@ -126,10 +126,10 @@ module Deduckt
     yield: :Yield, next: :Continue, break: :Break,
     False: :Bool, True: :Bool, while: :While,
     when: :Of, erange: :Range, zsuper: :Super, kwbegin: :Try,
-    rescue: :Except, resbody: :Code}
+    rescue: :Except, resbody: :Code, optarg: :Optarg}
 
   OPERATORS = Set.new [:+, :-, :*, :/, :==, :>, :<, :>=, :<=, :"!=", :"&&", :"||", :"!"]
-  NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase, :RubySelf]
+  NORMAL = Set.new [:RubyIf, :RubyPair, :RubyCase, :RubySelf, :RubyOptarg]
   VOID_TYPE = {kind: :Simple, label: 'Void'}
   NIL_VALUE = val(:Nil)
 
@@ -627,9 +627,6 @@ module Deduckt
     end
 
     def compile_send(child)
-      puts child.to_json
-      p child.typ
-      puts child[2].to_json
       m = if !child.typ.nil? || !child[2].nil?
         arg_index = 2
         val(:Send, children: child.children.map { |l| compile_child l }, typ: child.typ)
@@ -657,8 +654,8 @@ module Deduckt
       [m, arg_index]
     end
 
-    def compile_invoke(child)
-      if child[0].kind == :Nil
+    def compile_invoke(child, top_level = false)
+      if child[0].kind == :Nil || child[0].kind == :Self && top_level
         compile_call(child)    
       else
         compile_send(child)
@@ -679,12 +676,12 @@ module Deduckt
       m
     end
 
-    def compile_child child
+    def compile_child child, top_level = false
       if child.nil?
         return NIL_VALUE
       end
       if child.kind == :RubySend
-        m, arg_index = compile_invoke(child)
+        m, arg_index = compile_invoke(child, top_level = top_level)
         if arg_index != -1
           m = compile_kwargs(m, arg_index)
         end
@@ -712,7 +709,7 @@ module Deduckt
       $types_no_definition = Hash[@inter_types.map { |k, v| [k, v] }]
       traces.each do |path, file|
         file[:main] = file[:main].map do |child|
-          compile_child(child)
+          compile_child(child, top_level = true)
         end
 
         file[:classes] = file[:classes].map do |klass|

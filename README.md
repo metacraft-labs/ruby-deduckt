@@ -25,7 +25,6 @@ TBD
   bundle exec deduckt/ruby-deduckt
 ```
 
-bnd
 ## FAQ
 
 * Why does it analyze all the events?
