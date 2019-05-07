@@ -762,6 +762,7 @@ module Deduckt
       if path.include?('mixin')
         return true
       end
+      puts path
       @module_patterns.each do |pattern|
         if pattern == 'rubocop'
           return false if !path.include?(pattern)
@@ -864,8 +865,9 @@ module Deduckt
 end
 
 def deduckt
-  outdir = ENV['DEDUCKT_OUTPUT_DIR']
-  module_patterns = ENV['DEDUCKT_MODULE_PATTERNS'].split ' '
+  outdir = '/home/al/fast-rubocop/cops' # ENV['DEDUCKT_OUTPUT_DIR'] || '.'
+  p outdir
+  module_patterns = (ENV['DEDUCKT_MODULE_PATTERNS'] || '').split ' '
 
   Deduckt::TraceRun.new('', [], {outdir: outdir, module_patterns: module_patterns}).execute(load = false)
 end
